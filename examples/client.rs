@@ -75,6 +75,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("couldn't load any default trust roots: {}", e);
             }
         };
+
+        let fd = std::fs::File::open("examples/ca.cer")?;
+        let mut buf = std::io::BufReader::new(&fd);
+        let certs = rustls_pemfile::certs(&mut buf)?;
+        roots.add_parsable_certificates(&certs);
+
         tls_config_builder
             .with_root_certificates(roots)
             .with_no_client_auth()
@@ -94,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client_config = quinn::ClientConfig::new(Arc::new(tls_config));
 
-    let mut client_endpoint = h3_quinn::quinn::Endpoint::client("[::]:0".parse().unwrap())?;
+    let mut client_endpoint = h3_quinn::quinn::Endpoint::client("127.0.0.1:0".parse().unwrap())?;
     client_endpoint.set_default_client_config(client_config);
     let quinn_conn = h3_quinn::Connection::new(client_endpoint.connect(addr, auth.host())?.await?);
 

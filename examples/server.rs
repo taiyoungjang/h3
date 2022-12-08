@@ -1,4 +1,5 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::path::Path;
 
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
@@ -25,7 +26,7 @@ struct Opt {
     #[structopt(
         short,
         long,
-        default_value = "[::1]:4433",
+        default_value = "[::]:4433",
         help = "What address:port to listen for new connections"
     )]
     pub listen: SocketAddr,
@@ -57,7 +58,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
-    let opt = Opt::from_args();
+    //let opt = Opt::from_args();
+    let opt = Opt{
+        listen: SocketAddr::V4("0.0.0.0:4433".parse().unwrap()),
+        root: Some(Path::new("examples").to_path_buf()),
+        certs: Certs{
+            cert: Some(Path::new("examples").join("wn.ytlaw80.com.cer").to_path_buf()),
+            key: Some(Path::new("examples").join("wn.ytlaw80.com.key").to_path_buf()),
+        }
+    };
 
     let root = if let Some(root) = opt.root {
         if !root.is_dir() {
@@ -175,18 +184,25 @@ where
 static ALPN: &[u8] = b"h3";
 
 async fn load_crypto(opt: Certs) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
-    let (cert, key) = match (opt.cert, opt.key) {
+    let (certs, key) = match (opt.cert, opt.key) {
         (None, None) => build_certs(),
         (Some(cert_path), Some(ref key_path)) => {
-            let mut cert_v = Vec::new();
-            let mut key_v = Vec::new();
-
-            let mut cert_f = File::open(cert_path).await?;
-            let mut key_f = File::open(key_path).await?;
-
-            cert_f.read_to_end(&mut cert_v).await?;
-            key_f.read_to_end(&mut key_v).await?;
-            (rustls::Certificate(cert_v), PrivateKey(key_v))
+            let certs = {
+                let fd = std::fs::File::open(cert_path)?;
+                let mut buf = std::io::BufReader::new(&fd);
+                rustls_pemfile::certs(&mut buf)?
+                    .into_iter()
+                    .map(Certificate)
+                    .collect()
+            };
+            let key_f = std::fs::File::open(key_path)?;
+            let mut buf = std::io::BufReader::new(&key_f);
+            let key = rustls_pemfile::rsa_private_keys(&mut buf)?
+                .into_iter()
+                .map(PrivateKey)
+                .next()
+                .unwrap();
+            (certs, key)
         }
         (_, _) => return Err("cert and key args are mutually dependant".into()),
     };
@@ -197,16 +213,16 @@ async fn load_crypto(opt: Certs) -> Result<rustls::ServerConfig, Box<dyn std::er
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_no_client_auth()
-        .with_single_cert(vec![cert], key)?;
+        .with_single_cert(certs, key)?;
     crypto.max_early_data_size = u32::MAX;
     crypto.alpn_protocols = vec![ALPN.into()];
 
     Ok(crypto)
 }
 
-pub fn build_certs() -> (Certificate, PrivateKey) {
+pub fn build_certs() -> (Vec<Certificate>, PrivateKey) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let key = PrivateKey(cert.serialize_private_key_der());
     let cert = Certificate(cert.serialize_der().unwrap());
-    (cert, key)
+    (vec![cert], key)
 }
